@@ -1,0 +1,184 @@
+---
+title: "Building_Evaluating_LM_Model"
+author: "Michael J Longstreth"
+date: "January 6, 2019"
+output: 
+  html_document:
+    toc: yes
+---
+
+```{r setup, startup, warning=FALSE, message=FALSE, comment=NA, echo=FALSE}
+library(tidyverse)
+library(purrr)
+library(gmodels)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(ipred)
+library(Metrics)
+knitr::opts_chunk$set(echo = TRUE)
+```
+## 1. Explore and Transform Data
+### 1.1 Read in CSV file for analysis and examine raw data from data set.
+```{r}
+healthcare <- read_csv('healthcare.csv')
+head(healthcare, n = 5)
+tail(healthcare, n = 5)
+dim(healthcare)
+glimpse(healthcare)
+```
+
+### 1.2 Convert categorical variable to factors and add binomial varible of same in advance of analysis.
+```{r}
+healthcare[,c(2,5,6)] <- map(healthcare[,c(2,5,6)], as.factor)
+healthcare$smoker_num <- ifelse(healthcare$smoker == "yes", 1, 0)
+healthcare$gender_num <- ifelse(healthcare$gender == "male", 1, 0)
+```
+
+### 1.3 View balance of categorical variables in dataset.
+```{r}
+CrossTable(healthcare$region)
+CrossTable(healthcare$gender)
+CrossTable(healthcare$smoker)
+```
+
+### 1.4 Check for missing data; confirmed by following no data missing.
+```{r}
+sapply(healthcare,
+       function(x) sum(is.na(x)))
+```
+
+### 1.5 Do initial correlation check on variables, removing factors.
+```{r}
+healthcare_factors <- c(2, 5, 6)
+cor(healthcare[,-healthcare_factors])
+summary(healthcare)
+```
+
+### 1.6 Perform initial analysis of variables in dataset.
+```{r comment=NA}
+#Histogram of Cost
+ggplot(healthcare, aes(x = costs)) +
+  geom_histogram(binwidth = 1000)
+
+#Attempt to normalize distribution of cost variable
+ggplot(healthcare, aes(x = log(costs))) +
+  geom_histogram(binwidth = .1)
+
+#Smoker fill on cost histogram, shows smokers highly concentrated in higher levels of cost distribution
+ggplot(healthcare, aes(x = log(costs), fill = smoker)) +
+  geom_histogram(binwidth = .1)
+
+#Density Plots
+ggplot(healthcare, aes(x = costs, fill = smoker)) +
+  geom_density(alpha = .5) +
+  scale_fill_manual(values=c("red","blue"))
+
+ggplot(healthcare, aes(x = log(costs), fill = smoker)) +
+  geom_density(alpha = .5) +
+  scale_fill_manual(values=c("red","blue"))
+
+#Plot of Age v. Costs showing distinct linear relationship (however there is jump in cost due to smoker = "Yes")
+ggplot(healthcare, aes(x = age_yrs, y = costs, color = smoker)) +
+  geom_point()
+```
+
+##2.Prepare for Analysis
+### 2.1 Mean model for evaluation.
+Retrieve the average cost from data set and compute Root Mean Squared Error ("RMSE") of same to use as a base line to compare model results.
+```{r}
+mean_model <- mean(healthcare$costs) - healthcare[["costs"]]
+rmse_mean_model <- sqrt(mean(mean_model^2))
+model_performance <- list()
+model_performance[1] <- rmse_mean_model
+names(model_performance) <- c("Mean Model")
+model_performance
+```
+
+### 2.2 Train/Test sets & model Formula.
+First I set the seed for reproducibility.  I then shuffle the data to remove any ordering in the data to make sure the train/test data set are created from a random order.  I then create a training data set containing 80% of the observations in the data set and a test data set to evaluate the model on new data, to see how the model will perform when faced with data from outside the training set.
+```{r}
+set.seed(42)
+rows <- sample(nrow(healthcare))
+healthcare <- healthcare[rows,]
+assignment <- sample(1:2,
+                     size = nrow(healthcare),
+                     prob = c(.8, .2),
+                     replace = TRUE)
+healthcare_train <- healthcare[assignment == 1,
+                               -healthcare_factors]
+
+healthcare_test <- healthcare[assignment == 2,
+                              -healthcare_factors]
+```
+##3. Linear Regression.
+### 3.1 OSLR Model.
+From running various iterations of variable combinations, I have determined that the Age, Number of Children, Smoker (Y/N) and an interation variable of Body Mass and Smoker will be the variables I will use to build the OSLR model.
+```{r}
+oslr_fm <- formula(costs ~
+                     age_yrs +
+                     no_children +
+                     smoker_num +
+                     body_mass:smoker_num)
+oslr_model <- lm(formula = oslr_fm,
+                 data = healthcare_train)
+summary(oslr_model)
+
+oslr_predict <- predict(oslr_model,
+                        newdata = healthcare_test)
+oslr_error <- oslr_predict - healthcare_test[["costs"]]
+rmse_oslr_model <- sqrt(mean(oslr_error^2))
+model_performance[2] <- rmse_oslr_model
+names(model_performance) <- c("Mean Model",
+                              "OSLR Model")
+model_performance
+```
+
+### 3.2 "RPart" model.
+Prepare "Rpart" regression tree model and check RMSE performance.
+```{r warning=FALSE, message=FALSE}
+rpart_fm <- formula(costs ~
+                      age_yrs +
+                      body_mass +
+                      no_children +
+                      prev_balance +
+                      smoker_num +
+                      gender_num)
+rpart_model <- rpart(formula = rpart_fm,
+                     data = healthcare_train,
+                     method = "anova")
+summary(rpart_model)
+rpart.plot(rpart_model)
+rpart_predict <- predict(rpart_model,
+                         newdata = healthcare_test)
+rpart_error <- rpart_predict - healthcare_test[["costs"]]
+rmse_rpart_model <- sqrt(mean(rpart_error^2))
+model_performance[3] <- rmse_rpart_model
+names(model_performance) <- c("Mean Model",
+                              "OSLR Model",
+                              "RPart Model")
+model_performance
+```
+
+### 3.3 Bootstrap model.
+Perform Bootstrap model on dataset to try and improve model performance.
+```{r}
+set.seed(42)
+rpart_bag_model <- bagging(formula = rpart_fm,
+                           data = healthcare_train,
+                           coob = TRUE)
+rpart_bag_model
+rpart_bag_prediction <- predict(rpart_bag_model,
+                                newdata = healthcare_test)
+rmse_rpart_bootstrap <- rmse(actual = healthcare_test$costs,
+                             predicted = rpart_bag_prediction)
+model_performance[6] <- rmse_rpart_bootstrap
+names(model_performance) <- c("Mean Model",
+                              "OSLR Model",
+                              "RPart Model",
+                              "Rpart Model(Bootstrap)")
+model_performance
+```
+
+## 4. Conclusion.
+Based on comparing RMSE the ideal model that was created is the Bootstrapped model, however,considering the RMSE, the initial OSLR model shows a significant RMSE when considering time and complexity of models.  With time constraint and conveying analysis to Business Decision Makers, the OSLR model could be ideal.
