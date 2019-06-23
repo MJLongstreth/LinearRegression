@@ -1,62 +1,80 @@
 ---
 title: "Building_Evaluating_LM_Model"
-author: "Michael J Longstreth"
-date: "January 6, 2019"
+author: "Michael Longstreth"
+date: "June 23, 2019"
 output: 
   html_document:
-    toc: yes
+    toc: true
+    number_sections: true
+    toc_float: true
+      
+      
 ---
 
-```{r setup, startup, warning=FALSE, message=FALSE, comment=NA, echo=FALSE}
-library(tidyverse)
-library(purrr)
-library(gmodels)
-library(ggplot2)
-library(rpart)
-library(rpart.plot)
-library(ipred)
-library(Metrics)
+```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-## 1. Explore and Transform Data
-### 1.1 Read in CSV file for analysis and examine raw data from data set.
-```{r}
+
+# Objective
+*  Use the dataset healthcare data frame (see below) to fit  
+     +  an OLSR linear (lm) model
+     +  a CART (rpart) model
+     +  a Bootstapped model
+     +  a Gradient Booting Machine ("GBM") model
+*  to predict **costs**
+
+*  Explore the dataset as needed to guide your analysis  
+*  Prepare your dataset (e.g., to avoid overfitting)  
+*  Fit your models using lm and rpart  
+*  Tune your models to optimize performance    
+*  Show and *explain* your results, use plots where appropriate  
+*  Evaluate model performance  
+*  State your conclusions 
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+library(tidyverse)
 healthcare <- read_csv('healthcare.csv')
+```
+
+# Examine raw data from data set.
+```{r}
 head(healthcare, n = 5)
 tail(healthcare, n = 5)
 dim(healthcare)
 glimpse(healthcare)
 ```
 
-### 1.2 Convert categorical variable to factors and add binomial varible of same in advance of analysis.
-```{r}
+# Convert categorical variable to factors and add binomial varible of same in advance of analysis.
+```{r warning=FALSE, message=FALSE}
+library(purrr)
 healthcare[,c(2,5,6)] <- map(healthcare[,c(2,5,6)], as.factor)
 healthcare$smoker_num <- ifelse(healthcare$smoker == "yes", 1, 0)
 healthcare$gender_num <- ifelse(healthcare$gender == "male", 1, 0)
 ```
 
-### 1.3 View balance of categorical variables in dataset.
-```{r}
+# View balance of categorical variables in dataset.
+```{r warning=FALSE, message=FALSE}
+library(gmodels)
 CrossTable(healthcare$region)
 CrossTable(healthcare$gender)
 CrossTable(healthcare$smoker)
 ```
 
-### 1.4 Check for missing data; confirmed by following no data missing.
+# Check for missing data; confirmed no data missing.
 ```{r}
-sapply(healthcare,
-       function(x) sum(is.na(x)))
+sapply(healthcare, function(x) sum(is.na(x)))
 ```
 
-### 1.5 Do initial correlation check on variables, removing factors.
+# Do initial correlation check on variables, removing factors.
 ```{r}
 healthcare_factors <- c(2, 5, 6)
 cor(healthcare[,-healthcare_factors])
 summary(healthcare)
 ```
 
-### 1.6 Perform initial analysis of variables in dataset.
-```{r comment=NA}
+# Perform initial analysis of variables in dataset using ggplot2.
+```{r warning=FALSE, message=FALSE, comment=NA}
+library(ggplot2)
 #Histogram of Cost
 ggplot(healthcare, aes(x = costs)) +
   geom_histogram(binwidth = 1000)
@@ -83,9 +101,8 @@ ggplot(healthcare, aes(x = age_yrs, y = costs, color = smoker)) +
   geom_point()
 ```
 
-##2.Prepare for Analysis
-### 2.1 Mean model for evaluation.
-Retrieve the average cost from data set and compute Root Mean Squared Error ("RMSE") of same to use as a base line to compare model results.
+# Mean model for evaluation.
+Retrieve the average cost across all variables and retrieve RMSE to use as a base line for future model results.
 ```{r}
 mean_model <- mean(healthcare$costs) - healthcare[["costs"]]
 rmse_mean_model <- sqrt(mean(mean_model^2))
@@ -95,31 +112,37 @@ names(model_performance) <- c("Mean Model")
 model_performance
 ```
 
-### 2.2 Train/Test sets & model Formula.
-First I set the seed for reproducibility.  I then shuffle the data to remove any ordering in the data to make sure the train/test data set are created from a random order.  I then create a training data set containing 80% of the observations in the data set and a test data set to evaluate the model on new data, to see how the model will perform when faced with data from outside the training set.
+# Train/Test set & model Formula.
+Shuffle the data for prepartion of train/test sets, create train/test sets from shuffled data and create formula to be used for future models; from doing various analysis and checks on data, the variables and variable interactions in the code were selected.
 ```{r}
 set.seed(42)
 rows <- sample(nrow(healthcare))
 healthcare <- healthcare[rows,]
-assignment <- sample(1:2,
+assignment <- sample(1:3,
                      size = nrow(healthcare),
-                     prob = c(.8, .2),
+                     prob = c(.7, .15, .15),
                      replace = TRUE)
 healthcare_train <- healthcare[assignment == 1,
                                -healthcare_factors]
 
 healthcare_test <- healthcare[assignment == 2,
                               -healthcare_factors]
-```
-##3. Linear Regression.
-### 3.1 OSLR Model.
-From running various iterations of variable combinations, I have determined that the Age, Number of Children, Smoker (Y/N) and an interation variable of Body Mass and Smoker will be the variables I will use to build the OSLR model.
-```{r}
+
+healthcare_valid <- healthcare[assignment == 3,
+                               -healthcare_factors]
 oslr_fm <- formula(costs ~
                      age_yrs +
+                     body_mass +
                      no_children +
+                     prev_balance +
                      smoker_num +
+                     gender_num +
                      body_mass:smoker_num)
+```
+
+# OSLR Model
+Create OSLR model and check RMSE performance.
+```{r}
 oslr_model <- lm(formula = oslr_fm,
                  data = healthcare_train)
 summary(oslr_model)
@@ -134,7 +157,7 @@ names(model_performance) <- c("Mean Model",
 model_performance
 ```
 
-### 3.2 "RPart" model.
+# "RPart" model.
 Prepare "Rpart" regression tree model and check RMSE performance.
 ```{r warning=FALSE, message=FALSE}
 rpart_fm <- formula(costs ~
@@ -144,6 +167,9 @@ rpart_fm <- formula(costs ~
                       prev_balance +
                       smoker_num +
                       gender_num)
+
+library(rpart)
+library(rpart.plot)
 rpart_model <- rpart(formula = rpart_fm,
                      data = healthcare_train,
                      method = "anova")
@@ -160,9 +186,79 @@ names(model_performance) <- c("Mean Model",
 model_performance
 ```
 
-### 3.3 Bootstrap model.
-Perform Bootstrap model on dataset to try and improve model performance.
+## CP Tuning.
+Perform CP tuning on "RPart" model to try and improve performance.
 ```{r}
+print(rpart_model$cptable)
+opt_index <- which.min(rpart_model$cptable[, "xerror"])
+cp_opt <- rpart_model$cptable[opt_index, "CP"]
+rpart_model_cp <- prune(tree = rpart_model,
+                        cp = cp_opt)
+# rpart_model_cp
+rpart_cp_predict <- predict(rpart_model_cp,
+                            newdata = healthcare_test)
+rpart_cp_error <- rpart_cp_predict - healthcare_test[["costs"]]
+rmse_rpart_model_cp <- sqrt(mean(rpart_cp_error^2))
+model_performance[4] <- rmse_rpart_model_cp
+names(model_performance) <- c("Mean Model",
+                              "OSLR Model",
+                              "RPart Model",
+                              "Rpart Model(CP)")
+model_performance
+```
+
+## Hyper Grid tuning.
+Perform Hyper Grid tuning on "RPart" model to try and improve performance.
+```{r warning=FALSE, message=FALSE}
+library(Metrics)
+minsplit <- seq(1, 8, 1)
+maxdepth <- seq(1, 6, 1)
+hyper_grid <- expand.grid(minsplit = minsplit,
+                          maxdepth = maxdepth)
+head(hyper_grid)
+nrow(hyper_grid)
+num_rpart_models <- nrow(hyper_grid)
+tune_rpart_models <- list()
+for (i in 1:num_rpart_models) {
+  minsplit <- hyper_grid$minsplit[i]
+  maxdepth <- hyper_grid$maxdepth[i]
+  
+  tune_rpart_models[[i]] <- rpart(formula = rpart_fm,
+                                  data = healthcare_train,
+                                  method = "anova",
+                                  minsplit = minsplit,
+                                  maxdepth = maxdepth)
+}
+num_rpart_models <- length(tune_rpart_models)
+rpart_rmse_values <- c()
+for (i in 1:num_rpart_models) {
+  model <- tune_rpart_models[[i]]
+  
+  pred <- predict(object = model,
+                  newdata = healthcare_valid)
+  
+  rpart_rmse_values[i] <- rmse(actual = healthcare_valid$costs,
+                               predicted = pred)
+}
+best_rpart_model <- tune_rpart_models[[which.min(rpart_rmse_values)]]
+best_rpart_model$control
+pred <- predict(object = best_rpart_model,
+                newdata = healthcare_test)
+rmse_rpart_model_tune <- rmse(actual = healthcare_test$costs,
+                              predicted = pred)
+model_performance[5] <- rmse_rpart_model_tune
+names(model_performance) <- c("Mean Model",
+                              "OSLR Model",
+                              "RPart Model",
+                              "Rpart Model(CP)",
+                              "Rpart Model(Tune)")
+model_performance
+```
+
+# Bootstrap model.
+Perform Bootstrap model on dataset to try and improve model performance.
+```{r warning=FALSE, message=FALSE}
+library(ipred)
 set.seed(42)
 rpart_bag_model <- bagging(formula = rpart_fm,
                            data = healthcare_train,
@@ -176,9 +272,40 @@ model_performance[6] <- rmse_rpart_bootstrap
 names(model_performance) <- c("Mean Model",
                               "OSLR Model",
                               "RPart Model",
+                              "Rpart Model(CP)",
+                              "Rpart Model(Tune)",
                               "Rpart Model(Bootstrap)")
 model_performance
 ```
 
-## 4. Conclusion.
-Based on comparing RMSE the ideal model that was created is the Bootstrapped model, however,considering the RMSE, the initial OSLR model shows a significant RMSE when considering time and complexity of models.  With time constraint and conveying analysis to Business Decision Makers, the OSLR model could be ideal.
+# GBM model.
+Perform Gradient Boosting on dataset to try and improve model performan.
+```{r warning=FALSE, message=FALSE}
+library(gbm)
+set.seed(42)
+rpart_boost_model <- gbm(formula = rpart_fm,
+                         distribution = "gaussian",
+                         data = healthcare_train,
+                         n.trees = 50000,
+                         cv = 10)
+gbm_opt <- gbm.perf(rpart_boost_model)
+summary(rpart_boost_model)
+rpart_boost_prediction <- predict(rpart_boost_model,
+                                  newdata = healthcare_test,
+                                  n.trees = gbm_opt)
+rmse_rpart_boost_model <- rmse(actual = healthcare_test$costs,
+                               predicted = rpart_boost_prediction)
+model_performance[7] <- rmse_rpart_boost_model
+names(model_performance) <- c("Mean Model",
+                              "OSLR Model",
+                              "RPart Model",
+                              "Rpart Model(CP)",
+                              "Rpart Model(Tune)",
+                              "Rpart Model(Bootstrap)",
+                              "Rpart Model(Boost)")
+model_performance
+```
+
+# Conclusion.
+Based on the RMSE the ideal model that was created is the Bootstrapped model, however,considering the RMSE, the initial OSLR model shows a significant RMSE when considering time and complexity of models.  With ime constraint and conveying analysis to Business Decision Makers, the OSLR model could be ideal.
+Comments: Somewhat unknown as why tuning parameters did not improve "RPart" model and would like feedback on this.
